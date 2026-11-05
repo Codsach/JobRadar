@@ -17,7 +17,8 @@ jobradar/
 ## Ownership rules
 
 - **Python owns the database schema.** Schema changes happen only through Alembic migrations in `collectors/`.
-- `web/` reads the database with parameterized SQL (`pg`). No ORM in `web/`. The only tables `web/` may write to are `applications` and `preferences`.
+- `web/` reads the database with parameterized SQL (`pg`). No ORM in `web/`. The only tables `web/` may write to are `applications`, `preferences`, `companies`, and `sources`.
+  - `companies` and `sources` writes happen only via the "Add Company" server action (`web/src/app/actions/companies.ts`), which requires an active session, uses ON CONFLICT DO NOTHING, and never fabricates data.
 - Never edit the schema from `web/`.
 
 ## Working rules

@@ -309,3 +309,26 @@ def test_health_alert_on_significant_drop():
     assert args[0] == "greenhouse:stripe"
     assert args[1] == "drop"
     assert "90% decrease" in args[2]
+
+
+def test_manual_source_is_skipped_without_failure_or_alerts():
+    """Manual sources must be skipped without executing collection or alerts."""
+    mock_engine = MagicMock()
+    mock_telegram = MagicMock(spec=TelegramSender)
+    mock_telegram.enabled = True
+
+    run_source(
+        engine=mock_engine,
+        collector=None,
+        telegram=mock_telegram,
+        board_token="ibm",
+        source_slug="manual:ibm",
+        source_type="manual",
+        enabled=False,
+    )
+
+    # Engine connection should not write source_runs or failure
+    assert mock_engine.begin.return_value.__enter__.return_value.execute.call_count == 0
+    # No health alerts should be dispatched
+    assert mock_telegram.send_health_alert.call_count == 0
+    assert mock_telegram.send_raw_message.call_count == 0

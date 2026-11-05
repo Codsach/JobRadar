@@ -31,6 +31,7 @@ export interface JobFilters {
   company?: string;
   category?: string;
   status?: string;
+  all?: boolean; // when true, bypasses user preferences matching
 }
 
 export interface Counters {
@@ -89,8 +90,10 @@ export function formatDate(iso: string): string {
   });
 }
 
-export async function getJobs(filters: JobFilters = {}): Promise<JobRow[]> {
-  const pool = getPool();
+function buildFilterConditions(
+  filters: JobFilters,
+  prefs?: Preferences
+): { whereClause: string; params: unknown[] } {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -121,7 +124,53 @@ export async function getJobs(filters: JobFilters = {}): Promise<JobRow[]> {
     conditions.push(`j.location ILIKE $${params.length}`);
   }
 
+  // If not in "all jobs" mode and preferences are available, apply matching rules
+  if (!filters.all && prefs) {
+    if ((!filters.level || filters.level === "all") && prefs.levels.length > 0) {
+      params.push(prefs.levels);
+      conditions.push(`j.level = ANY($${params.length}::text[])`);
+    }
+    if ((!filters.category || filters.category === "all") && prefs.categories.length > 0) {
+      params.push(prefs.categories);
+      conditions.push(`j.category = ANY($${params.length}::text[])`);
+    }
+    if ((!filters.company || filters.company === "all") && prefs.companies.length > 0) {
+      params.push(prefs.companies);
+      conditions.push(`c.name = ANY($${params.length}::text[])`);
+    }
+    if ((!filters.location || filters.location === "all") && prefs.locations.length > 0) {
+      const locConditions = prefs.locations.map((loc) => {
+        params.push(`%${loc}%`);
+        return `j.location ILIKE $${params.length}`;
+      });
+      conditions.push(`(${locConditions.join(" OR ")})`);
+    }
+    if (prefs.include_keywords.length > 0) {
+      const kwConditions = prefs.include_keywords.map((kw) => {
+        params.push(`%${kw}%`);
+        return `(j.title ILIKE $${params.length} OR j.description ILIKE $${params.length})`;
+      });
+      conditions.push(`(${kwConditions.join(" OR ")})`);
+    }
+    if (prefs.exclude_keywords.length > 0) {
+      const exConditions = prefs.exclude_keywords.map((kw) => {
+        params.push(`%${kw}%`);
+        return `(j.title ILIKE $${params.length} OR j.description ILIKE $${params.length})`;
+      });
+      conditions.push(`NOT (${exConditions.join(" OR ")})`);
+    }
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  return { whereClause, params };
+}
+
+export async function getJobs(
+  filters: JobFilters = {},
+  prefs?: Preferences
+): Promise<JobRow[]> {
+  const pool = getPool();
+  const { whereClause, params } = buildFilterConditions(filters, prefs);
 
   const query = `
     SELECT
@@ -153,6 +202,28 @@ export async function getJobs(filters: JobFilters = {}): Promise<JobRow[]> {
     posted_at: r.posted_at ? new Date(r.posted_at).toISOString() : null,
     first_seen_at: new Date(r.first_seen_at).toISOString(),
   }));
+}
+
+/**
+ * Count total jobs matching the same filters as getJobs() but without the LIMIT.
+ * Used to show "Showing X of Y" in the job list header.
+ */
+export async function getTotalJobCount(
+  filters: JobFilters = {},
+  prefs?: Preferences
+): Promise<number> {
+  const pool = getPool();
+  const { whereClause, params } = buildFilterConditions(filters, prefs);
+
+  const query = `
+    SELECT COUNT(*)::int AS total
+    FROM jobs j
+    JOIN companies c ON c.id = j.company_id
+    ${whereClause}
+  `;
+
+  const { rows } = await pool.query(query, params);
+  return rows[0]?.total ?? 0;
 }
 
 export async function getFilterOptions(): Promise<FilterOptions> {
@@ -220,6 +291,7 @@ export async function getCounters(prefs?: Preferences): Promise<Counters> {
       matchingQuery += ` AND (${locConditions.join(" OR ")})`;
     }
     if (prefs.include_keywords.length > 0) {
+      // OR semantics: job must match at least one keyword (mirrors matches_preferences() in Python)
       const kwConditions = prefs.include_keywords.map((kw) => {
         matchingParams.push(`%${kw}%`);
         return `(j.title ILIKE $${matchingParams.length} OR j.description ILIKE $${matchingParams.length})`;
@@ -227,6 +299,7 @@ export async function getCounters(prefs?: Preferences): Promise<Counters> {
       matchingQuery += ` AND (${kwConditions.join(" OR ")})`;
     }
     if (prefs.exclude_keywords.length > 0) {
+      // None of the exclude keywords may appear
       const exConditions = prefs.exclude_keywords.map((kw) => {
         matchingParams.push(`%${kw}%`);
         return `(j.title ILIKE $${matchingParams.length} OR j.description ILIKE $${matchingParams.length})`;

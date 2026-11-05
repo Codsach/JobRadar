@@ -9,6 +9,7 @@ export interface SourceHealth {
   id: number;
   slug: string;
   type: string;
+  config: Record<string, unknown>;
   enabled: boolean;
   company_name: string;
   last_run_status: "success" | "failed" | "running" | null;
@@ -25,6 +26,7 @@ export async function getSourceHealth(): Promise<SourceHealth[]> {
       s.id,
       s.slug,
       s.type,
+      s.config,
       s.enabled,
       c.name AS company_name,
       sr.status AS last_run_status,

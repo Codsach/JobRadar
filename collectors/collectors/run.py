@@ -30,6 +30,7 @@ from sqlalchemy import select, text  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 
 from collectors.adapters.greenhouse import GreenhouseCollector  # noqa: E402
+from collectors.adapters.lever import LeverCollector  # noqa: E402
 from collectors.db import get_engine  # noqa: E402
 from collectors.models import (  # noqa: E402
     companies,
@@ -108,16 +109,27 @@ def run_source(
     collector,
     telegram: TelegramSender,
     board_token: str,
+    source_slug: str | None = None,
+    company_name: str | None = None,
+    source_id: int | None = None,
+    source_type: str = "greenhouse",
+    enabled: bool = True,
 ) -> None:
     """Run collection, persistence, health checking, and alerts for one source."""
+    slug = source_slug or f"{source_type}:{board_token}"
+    if source_type == "manual" or not enabled or collector is None:
+        logger.info("Skipping manual/disabled source %s without collection.", slug)
+        return
+
     run_started_at = datetime.now(timezone.utc)
-    source_slug = f"greenhouse:{board_token}"
-    company_name = board_token.title()
+    source_slug = slug
+    company_name = company_name or board_token.title()
 
     # Pre-ensure company and source to obtain source_id
     with engine.begin() as conn:
         company_id = _ensure_company(conn, company_name)
-        source_id = _ensure_source(conn, company_id, source_slug, board_token)
+        if source_id is None:
+            source_id = _ensure_source(conn, company_id, source_slug, board_token)
         baseline_finished_at = _get_baseline_finished_at(conn, source_id)
         prev_jobs_found = _get_previous_run_job_count(conn, source_id)
         prefs = load_preferences(conn)
@@ -344,14 +356,62 @@ def run_source(
 def main() -> None:
     engine = get_engine()
     telegram = TelegramSender()
-    collector = GreenhouseCollector(board_token=BOARD_TOKEN)
 
-    run_source(
-        engine=engine,
-        collector=collector,
-        telegram=telegram,
-        board_token=BOARD_TOKEN,
-    )
+    with engine.begin() as conn:
+        stmt = select(
+            sources.c.id,
+            sources.c.slug,
+            sources.c.type,
+            sources.c.config,
+            sources.c.enabled,
+            companies.c.name.label("company_name"),
+        ).select_from(sources.join(companies, companies.c.id == sources.c.company_id))
+        all_sources = conn.execute(stmt).mappings().all()
+
+    if not all_sources:
+        collector = GreenhouseCollector(board_token=BOARD_TOKEN)
+        run_source(
+            engine=engine,
+            collector=collector,
+            telegram=telegram,
+            board_token=BOARD_TOKEN,
+        )
+        return
+
+    for src in all_sources:
+        if src["type"] == "manual" or not src["enabled"]:
+            logger.info(
+                "Skipping %s source %s (enabled=%s)",
+                src["type"],
+                src["slug"],
+                src["enabled"],
+            )
+            continue
+
+        collector = None
+        token = ""
+        cfg = src["config"] or {}
+        if src["type"] == "greenhouse":
+            token = cfg.get("board_token") or src["slug"].split(":")[-1]
+            collector = GreenhouseCollector(board_token=token)
+        elif src["type"] == "lever":
+            token = cfg.get("site") or src["slug"].split(":")[-1]
+            collector = LeverCollector(site=token, company_name=src["company_name"])
+        else:
+            logger.warning("Unknown collector type %r for source %s", src["type"], src["slug"])
+            continue
+
+        run_source(
+            engine=engine,
+            collector=collector,
+            telegram=telegram,
+            board_token=token,
+            source_slug=src["slug"],
+            company_name=src["company_name"],
+            source_id=src["id"],
+            source_type=src["type"],
+            enabled=src["enabled"],
+        )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import {
   getJobs,
+  getTotalJobCount,
   getCounters,
   getFilterOptions,
   formatHonestDate,
@@ -20,6 +21,7 @@ interface PageProps {
     company?: string;
     category?: string;
     status?: string;
+    all?: string;
   }>;
 }
 
@@ -89,9 +91,16 @@ async function SourceHealthPanel() {
       <div className="px-4 pb-4 pt-1 border-t border-slate-100">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mt-2">
           {sources.map((src) => {
+            const isManual = src.type === "manual" || !src.enabled;
             const isSuccess = src.last_run_status === "success";
             const isFailed = src.last_run_status === "failed";
             const isRunning = src.last_run_status === "running";
+            const careersUrl =
+              typeof src.config?.careers_url === "string"
+                ? src.config.careers_url
+                : typeof src.config?.url === "string"
+                ? src.config.url
+                : undefined;
 
             return (
               <div
@@ -104,7 +113,9 @@ async function SourceHealthPanel() {
                   </span>
                   <span
                     className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                      isSuccess
+                      isManual
+                        ? "bg-slate-200 text-slate-700"
+                        : isSuccess
                         ? "bg-emerald-100 text-emerald-700"
                         : isFailed
                         ? "bg-rose-100 text-rose-700"
@@ -113,33 +124,48 @@ async function SourceHealthPanel() {
                         : "bg-slate-200 text-slate-600"
                     }`}
                   >
-                    {src.last_run_status || "Never run"}
+                    {isManual ? "Manual — not auto-collected" : src.last_run_status || "Never run"}
                   </span>
                 </div>
 
-                <div className="text-slate-500 flex justify-between">
+                <div className="text-slate-500 flex justify-between items-center">
                   <span>Type: {src.type}</span>
-                  <span>
-                    {src.last_run_at
-                      ? new Date(src.last_run_at).toLocaleString("en-IN", {
-                          timeZone: "Asia/Kolkata",
-                          month: "short",
-                          day: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        }) + " IST"
-                      : "Never"}
-                  </span>
+                  {isManual ? (
+                    careersUrl ? (
+                      <a
+                        href={careersUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 underline font-medium"
+                      >
+                        Open careers ↗
+                      </a>
+                    ) : (
+                      <span className="text-slate-400">Manual review</span>
+                    )
+                  ) : (
+                    <span>
+                      {src.last_run_at
+                        ? new Date(src.last_run_at).toLocaleString("en-IN", {
+                            timeZone: "Asia/Kolkata",
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          }) + " IST"
+                        : "Never"}
+                    </span>
+                  )}
                 </div>
 
-                {src.last_run_status && (
+                {!isManual && src.last_run_status && (
                   <div className="text-slate-600 flex justify-between pt-1 border-t border-slate-200">
                     <span>Found: <b>{src.jobs_found ?? 0}</b></span>
                     <span>New: <b>{src.new_count ?? 0}</b></span>
                   </div>
                 )}
 
-                {src.error && (
+                {!isManual && src.error && (
                   <p className="text-rose-600 truncate text-[11px] pt-1" title={src.error}>
                     Error: {src.error}
                   </p>
@@ -153,6 +179,18 @@ async function SourceHealthPanel() {
   );
 }
 
+function buildModeUrl(filters: JobFilters, all: boolean): string {
+  const params = new URLSearchParams();
+  if (filters.category && filters.category !== "all") params.set("category", filters.category);
+  if (filters.level && filters.level !== "all") params.set("level", filters.level);
+  if (filters.company && filters.company !== "all") params.set("company", filters.company);
+  if (filters.location) params.set("location", filters.location);
+  if (filters.status && filters.status !== "active") params.set("status", filters.status);
+  if (all) params.set("all", "true");
+  const qs = params.toString();
+  return qs ? `/?${qs}` : "/";
+}
+
 async function FilterBar({ filters }: { filters: JobFilters }) {
   const options = await getFilterOptions();
 
@@ -162,6 +200,47 @@ async function FilterBar({ filters }: { filters: JobFilters }) {
       action="/"
       className="bg-white p-4 rounded-lg border border-slate-200 shadow-sm mb-6 flex flex-wrap items-end gap-3"
     >
+      {/* Preserve "all" toggle in form submissions */}
+      {filters.all && <input type="hidden" name="all" value="true" />}
+
+      {/* Mode toggle bar: Matching Jobs (default) vs All Jobs */}
+      <div className="w-full flex items-center justify-between pb-3 mb-1 border-b border-slate-100">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-700">View:</span>
+          <div className="inline-flex rounded-md border border-slate-200 bg-slate-100 p-0.5 text-xs font-medium">
+            <Link
+              href={buildModeUrl(filters, false)}
+              className={`px-3 py-1 rounded transition-colors ${
+                !filters.all
+                  ? "bg-white text-indigo-600 shadow-xs font-semibold"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              Matching jobs
+            </Link>
+            <Link
+              href={buildModeUrl(filters, true)}
+              className={`px-3 py-1 rounded transition-colors ${
+                filters.all
+                  ? "bg-white text-indigo-600 shadow-xs font-semibold"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              All jobs
+            </Link>
+          </div>
+        </div>
+        {!filters.all ? (
+          <span className="text-xs text-slate-400">
+            Filtered by saved presets & preferences
+          </span>
+        ) : (
+          <span className="text-xs text-slate-400">
+            Showing all active jobs
+          </span>
+        )}
+      </div>
+
       {/* Category filter */}
       <div className="flex-1 min-w-[130px]">
         <label className="block text-xs font-semibold text-slate-600 mb-1">
@@ -267,15 +346,56 @@ async function FilterBar({ filters }: { filters: JobFilters }) {
   );
 }
 
-async function JobList({ filters }: { filters: JobFilters }) {
-  const jobs = await getJobs(filters);
+async function JobList({
+  filters,
+}: {
+  filters: JobFilters;
+}) {
+  const prefs = await getPreferences();
+  const [jobs, total] = await Promise.all([
+    getJobs(filters, prefs),
+    getTotalJobCount(filters, prefs),
+  ]);
+
+  // Determine whether any non-default filter is active
+  const hasActiveFilters =
+    (filters.level && filters.level !== "all") ||
+    (filters.category && filters.category !== "all") ||
+    (filters.company && filters.company !== "all") ||
+    (filters.location && filters.location !== "all") ||
+    (filters.status && filters.status !== "active") ||
+    Boolean(filters.all);
 
   if (jobs.length === 0) {
     return (
       <div className="bg-white rounded-lg border border-slate-200 p-8 text-center text-slate-500">
-        <p className="text-base font-medium">No jobs matching your filter criteria.</p>
+        <p className="text-base font-medium">
+          {!filters.all
+            ? "No jobs matching your saved preferences & filters."
+            : "No jobs matching your filter criteria."}
+        </p>
         <p className="text-xs text-slate-400 mt-1">
-          Try clearing some filters or run <code>python -m collectors.run</code> to fetch new jobs.
+          {!filters.all ? (
+            <>
+              Try viewing{" "}
+              <Link href="/?all=true" className="underline text-indigo-500 hover:text-indigo-700">
+                All jobs
+              </Link>
+              {", "}
+              <Link href="/settings" className="underline text-indigo-500 hover:text-indigo-700">
+                adjusting role presets
+              </Link>
+              {", or clearing filters."}
+            </>
+          ) : (
+            <>
+              Try{" "}
+              <Link href="/" className="underline text-indigo-500 hover:text-indigo-700">
+                clearing filters
+              </Link>{" "}
+              or run <code>python -m collectors.run</code> to fetch new jobs.
+            </>
+          )}
         </p>
       </div>
     );
@@ -284,7 +404,27 @@ async function JobList({ filters }: { filters: JobFilters }) {
   return (
     <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex justify-between items-center text-xs text-slate-500">
-        <span>Showing {jobs.length} jobs (limit 200)</span>
+        <span>
+          Showing{" "}
+          <span className="font-semibold text-slate-700">{jobs.length}</span>
+          {" of "}
+          <span className="font-semibold text-slate-700">{total.toLocaleString()}</span>{" "}
+          {!filters.all ? "matching " : ""}job{total !== 1 ? "s" : ""}
+          {jobs.length >= 200 && (
+            <span className="text-slate-400"> (limit 200)</span>
+          )}
+          {hasActiveFilters && (
+            <>
+              {" "}·{" "}
+              <Link
+                href="/"
+                className="text-indigo-500 hover:text-indigo-700 underline font-medium"
+              >
+                clear filters ×
+              </Link>
+            </>
+          )}
+        </span>
         <span>Times displayed in IST</span>
       </div>
 
@@ -371,12 +511,14 @@ async function JobList({ filters }: { filters: JobFilters }) {
 
 export default async function HomePage(props: PageProps) {
   const searchParams = await props.searchParams;
+  const isAll = searchParams.all === "true" || searchParams.all === "1";
   const filters: JobFilters = {
     level: searchParams.level,
     location: searchParams.location,
     company: searchParams.company,
     category: searchParams.category,
     status: searchParams.status || "active",
+    all: isAll,
   };
 
   return (
